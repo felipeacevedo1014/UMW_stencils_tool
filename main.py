@@ -17,24 +17,42 @@ def replace_stencil_file():
         f.write(new_content)
 
     # Set the file permissions to Deny full control to the current user
-    deny_full_control_to_current_user(stencil_file_path)
+    protect_file_read_only(stencil_file_path)
 
 # Function to deny full control to the current user on the given file
-def deny_full_control_to_current_user(file_path):
-    user_profile = os.environ.get('USERPROFILE')
-    username = os.getlogin()  # Get the current logged in username
-    user_sid, _, _ = win32security.LookupAccountName(None, username)
-    
-    # Get the security descriptor
+def protect_file_read_only():
+    # Get file path
+    user_profile = os.environ['USERPROFILE']
+    file_path = os.path.join(user_profile, 'AppData', 'Roaming', 'Trane', 'CSET', 'Stencils', 'CSET', 'stenciltoload.cset')
+
+    # Create the file with empty dictionary content
+    with open(file_path, 'w') as f:
+        json.dump([], f)
+
+    # Get current user SID
+    username = os.getlogin()
+    user_sid, domain, type = win32security.LookupAccountName(None, username)
+
+    # Get current DACL
     sd = win32security.GetFileSecurity(file_path, win32security.DACL_SECURITY_INFORMATION)
     dacl = sd.GetSecurityDescriptorDacl()
 
-    # Add a Deny ACE (Access Control Entry) for full control to the current user
-    dacl.AddAccessDeniedAce(win32security.ACL_REVISION, win32security.FILE_ALL_ACCESS, user_sid)
+    # Define denied permissions (WRITE, MODIFY, DELETE)
+    denied_perms = (
+        win32security.FILE_WRITE_DATA | 
+        win32security.FILE_APPEND_DATA |
+        win32security.FILE_WRITE_EA |
+        win32security.DELETE
+    )
 
-    # Set the new security descriptor
+    # Add denied ACE for current user
+    dacl.AddAccessDeniedAce(win32security.ACL_REVISION, denied_perms, user_sid)
+
+    # Set updated DACL
     sd.SetSecurityDescriptorDacl(1, dacl, 0)
     win32security.SetFileSecurity(file_path, win32security.DACL_SECURITY_INFORMATION, sd)
+
+    print(f"File '{file_path}' created and write access denied to current user.")
 
 # Function 2: Copy folders to a new location excluding .cset files
 def copy_folders():
