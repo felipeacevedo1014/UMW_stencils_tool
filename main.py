@@ -5,6 +5,7 @@ import winreg as reg
 import json
 from pathlib import Path
 import ctypes
+import webbrowser
 
 # Function 1: Replace stenciltoload.cset with an empty dictionary and set security
 def replace_stencil_file():
@@ -15,44 +16,28 @@ def replace_stencil_file():
     new_content = json.dumps([])
     with open(stencil_file_path, 'w') as f:
         f.write(new_content)
+    print("stenciltoload.cset file replaced with empty dictionary.")
 
     # Set the file permissions to Deny full control to the current user
-    protect_file_read_only(stencil_file_path)
+    deny_full_control_to_current_user(stencil_file_path)
 
 # Function to deny full control to the current user on the given file
-def protect_file_read_only():
-    # Get file path
-    user_profile = os.environ['USERPROFILE']
-    file_path = os.path.join(user_profile, 'AppData', 'Roaming', 'Trane', 'CSET', 'Stencils', 'CSET', 'stenciltoload.cset')
-
-    # Create the file with empty dictionary content
-    with open(file_path, 'w') as f:
-        json.dump([], f)
-
-    # Get current user SID
-    username = os.getlogin()
-    user_sid, domain, type = win32security.LookupAccountName(None, username)
-
-    # Get current DACL
+def deny_full_control_to_current_user(file_path):
+    user_profile = os.environ.get('USERPROFILE')
+    username = os.getlogin()  # Get the current logged in username
+    user_sid, _, _ = win32security.LookupAccountName(None, username)
+    
+    # Get the security descriptor
     sd = win32security.GetFileSecurity(file_path, win32security.DACL_SECURITY_INFORMATION)
     dacl = sd.GetSecurityDescriptorDacl()
 
-    # Define denied permissions (WRITE, MODIFY, DELETE)
-    denied_perms = (
-        win32security.FILE_WRITE_DATA | 
-        win32security.FILE_APPEND_DATA |
-        win32security.FILE_WRITE_EA |
-        win32security.DELETE
-    )
+    # Add a Deny ACE (Access Control Entry) for full control to the current user
+    dacl.AddAccessDeniedAce(win32security.ACL_REVISION, win32security.TOKEN_ALL_ACCESS, user_sid)
 
-    # Add denied ACE for current user
-    dacl.AddAccessDeniedAce(win32security.ACL_REVISION, denied_perms, user_sid)
-
-    # Set updated DACL
+    # Set the new security descriptor
     sd.SetSecurityDescriptorDacl(1, dacl, 0)
     win32security.SetFileSecurity(file_path, win32security.DACL_SECURITY_INFORMATION, sd)
-
-    print(f"File '{file_path}' created and write access denied to current user.")
+    print(f"Full control denied to user on file {file_path}.")
 
 # Function 2: Copy folders to a new location excluding .cset files
 def copy_folders():
@@ -73,6 +58,7 @@ def copy_folders():
             shutil.copytree(source_item, destination_item)
         elif os.path.isfile(source_item) and item != "stenciltoload.cset":
             shutil.copy2(source_item, destination_item)
+    print("Folders copied successfully.")
 
 # Function 3: Add a URL to Trusted Sites in Internet Options
 def add_to_trusted_sites():
@@ -89,11 +75,34 @@ def add_to_trusted_sites():
     except Exception as e:
         print(f"Error adding URL to Trusted Sites: {e}")
 
+# Function 4: Open installation URL in default web browser
+def open_installation_url():
+    installation_url = "https://umw-stencil-loader.s3.amazonaws.com/UMWStencilLoader.vsto"
+    webbrowser.open(installation_url)
+    print("Installation URL opened in default web browser.")
+
+
 # Main function to run all steps
 def main():
-    replace_stencil_file()
-    copy_folders()
-    add_to_trusted_sites()
+    #replace_stencil_file()
+    try:
+        replace_stencil_file()
+    except Exception as e:
+        print(f"Error replacing stencil file: {e}")
+    try:
+        copy_folders()
+    except Exception as e:
+        print(f"Error copying folders: {e}")
+    try:
+        add_to_trusted_sites()
+    except Exception as e:
+        print(f"Error adding to trusted sites: {e}")
+    try:
+        open_installation_url()
+    except Exception as e:
+        print(f"Error opening installation URL: {e}")
 
 if __name__ == "__main__":
     main()
+
+
