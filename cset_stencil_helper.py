@@ -194,9 +194,6 @@ def copy_folders():
         if src.is_dir():
             shutil.copytree(src, dst, dirs_exist_ok=True)
             copied += 1
-        elif src.is_file() and src.name != "stenciltoload.cset":
-            shutil.copy2(src, dst)
-            copied += 1
 
     ok(f"Copied {copied} items to '{destination_path}' (skipped stenciltoload.cset).")
 
@@ -222,6 +219,7 @@ def open_installation_url():
     try:
         webbrowser.open(url)
         ok(f"Opened installer URL: {url}")
+        ok("If the installer does not start, copy and paste the URL into your browser.")
     except Exception as ex:
         fail(f"Error opening URL: {ex}")
 
