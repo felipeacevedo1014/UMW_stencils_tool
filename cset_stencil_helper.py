@@ -8,7 +8,7 @@ import webbrowser
 from pathlib import Path
 import winreg as reg
 
-# --- pywin32 for ACLs ---
+# --- pywin32 for ACLs (needed for the DENY on the first path) ---
 try:
     import win32security
     import ntsecuritycon as ntsc
@@ -63,7 +63,8 @@ def ensure_windows():
     if os.name != "nt":
         raise RuntimeError("This tool only supports Windows.")
 
-def get_paths():
+def get_paths_main():
+    """Main stencil path set (with ACL lock)."""
     user_profile = os.environ.get('USERPROFILE')
     if not user_profile:
         raise RuntimeError("USERPROFILE is not set.")
@@ -73,11 +74,19 @@ def get_paths():
     stencil_file_path = source_path / "stenciltoload.cset"
     return stencil_file_path, source_path, destination_path
 
-# ----------------- ACL logic -----------------
+def get_user_data_stencil_path():
+    """Secondary stencil path (NO ACL changes). %APPDATA%\\Trane\\CSET\\UserData\\stenciltoload.cset"""
+    appdata = os.environ.get('APPDATA')  # == C:\Users\<user>\AppData\Roaming
+    if not appdata:
+        raise RuntimeError("APPDATA is not set.")
+    return Path(appdata) / "Trane" / "CSET" / "UserData" / "stenciltoload.cset"
+
+# ----------------- ACL logic (for the main path only) -----------------
 def deny_read_write_exec_modify_for_current_user(file_path: Path):
     """
     Prepend a DENY ACE for the current user covering:
       FILE_GENERIC_READ | FILE_GENERIC_WRITE | FILE_GENERIC_EXECUTE | DELETE
+    This blocks Read, Write, Read & Execute, and Delete for the current user.
     """
     username = os.getlogin()
     user_sid, _, _ = win32security.LookupAccountName(None, username)
@@ -87,7 +96,7 @@ def deny_read_write_exec_modify_for_current_user(file_path: Path):
 
     new_dacl = win32security.ACL()
 
-    # What we want to deny (covers Read, Write, Read&Execute, Delete = "Modify"-like)
+    # What to deny
     deny_mask = (ntsc.FILE_GENERIC_READ |
                  ntsc.FILE_GENERIC_WRITE |
                  ntsc.FILE_GENERIC_EXECUTE |
@@ -107,15 +116,13 @@ def deny_read_write_exec_modify_for_current_user(file_path: Path):
         elif len(ace) == 3 and isinstance(ace[2], tuple) and len(ace[2]) == 2:
             return ace[0], ace[1], ace[2][0], ace[2][1]
         else:
-            # Unknown/extended ACE form: skip it
-            return None
+            return None  # Unknown/extended
 
     if old_dacl:
         for i in range(old_dacl.GetAceCount()):
             ace = old_dacl.GetAce(i)
             unpacked = _unpack_ace(ace)
             if not unpacked:
-                # Ignore uncommon/object/audit ACEs we can't mirror cleanly
                 continue
             ace_type, ace_flags, ace_mask, ace_sid = unpacked
 
@@ -129,18 +136,16 @@ def deny_read_write_exec_modify_for_current_user(file_path: Path):
                     new_dacl.AddAccessDeniedAceEx(win32security.ACL_REVISION_DS, ace_flags, ace_mask, ace_sid)
                 except AttributeError:
                     new_dacl.AddAccessDeniedAce(win32security.ACL_REVISION, ace_mask, ace_sid)
-            else:
-                # Skip other ACE types (system/audit/object)
-                continue
 
+    # Keep inherited ACEs visible/effective
     sd.SetSecurityDescriptorDacl(1, new_dacl, 1)
     win32security.SetFileSecurity(str(file_path), win32security.DACL_SECURITY_INFORMATION, sd)
 
-
 # ----------------- Steps -----------------
-def replace_stencil_file():
+def replace_stencil_file_main():
+    """Main path: delete -> write [] -> apply DENY for current user."""
     ensure_windows()
-    stencil_file_path, _, _ = get_paths()
+    stencil_file_path, _, _ = get_paths_main()
     stencil_file_path.parent.mkdir(parents=True, exist_ok=True)
 
     if stencil_file_path.exists():
@@ -157,13 +162,25 @@ def replace_stencil_file():
         pass
 
     deny_read_write_exec_modify_for_current_user(stencil_file_path)
-    ok("Applied DENY (Read/Write/Execute/Delete) for current user")
+    ok("Applied DENY (Read/Write/Execute/Delete) for current user (main path)")
 
+def replace_stencil_file_userdata():
+    """UserData path: delete -> write [] (NO ACL changes)."""
+    ensure_windows()
+    stencil_file_path = get_user_data_stencil_path()
+    stencil_file_path.parent.mkdir(parents=True, exist_ok=True)
+
+    if stencil_file_path.exists():
+        force_delete_file(stencil_file_path)
+        ok(f"Deleted existing file (UserData): {stencil_file_path}")
+
+    stencil_file_path.write_text(json.dumps([]), encoding='utf-8')
+    ok(f"Wrote empty list to (UserData): {stencil_file_path}")
 
 def copy_folders():
     """Copy everything from source to destination, excluding stenciltoload.cset."""
     ensure_windows()
-    _, source_path, destination_path = get_paths()
+    _, source_path, destination_path = get_paths_main()
 
     if not source_path.exists():
         raise FileNotFoundError(f"Source path not found: {source_path}")
@@ -212,9 +229,10 @@ def open_installation_url():
 def main():
     print("=== UMW Stencil Tool (Console) ===", flush=True)
     steps = [
-        ("Replace stencil file", replace_stencil_file),
-        ("Copy folders", copy_folders),
-        ("Add Trusted Site", add_to_trusted_sites),
+        ("Replace stencils to load file (Stencils)", replace_stencil_file_main),
+        ("Replace stencils to load file (UserData, no ACL)", replace_stencil_file_userdata),
+        ("Copy Stencils folders", copy_folders),
+        ("Add installer to Trusted Sites", add_to_trusted_sites),
         ("Open installer URL", open_installation_url),
     ]
 
