@@ -2,58 +2,14 @@ import os
 import sys
 import shutil
 import json
-import ctypes
 import traceback
 import webbrowser
 from pathlib import Path
 import winreg as reg
-
-# --- pywin32 for ACLs (needed for the DENY on the first path) ---
-try:
-    import win32security
-    import ntsecuritycon as ntsc
-except Exception as e:
-    raise SystemExit("pywin32 is required. Install with: pip install pywin32")
-
-# ----------------- Constants / Helpers -----------------
-FILE_ATTRIBUTE_READONLY = 0x01
-
-def set_readonly(path: str | Path, make_readonly: bool):
-    """Set or clear the Windows READONLY attribute (no admin needed)."""
-    p = str(path)
-    attrs = ctypes.windll.kernel32.GetFileAttributesW(p)
-    if attrs == -1:
-        # file might not exist yet; nothing to do
-        return
-    ctypes.windll.kernel32.SetFileAttributesW(
-        p,
-        (attrs | FILE_ATTRIBUTE_READONLY) if make_readonly else (attrs & ~FILE_ATTRIBUTE_READONLY)
-    )
-
-def force_delete_file(path: Path, retries: int = 2):
-    """Best-effort delete: clear read-only, try remove; final fallback rename to .bak."""
-    try:
-        set_readonly(path, False)
-    except Exception:
-        pass
-    for attempt in range(retries + 1):
-        try:
-            if path.exists():
-                os.remove(path)
-            return
-        except PermissionError:
-            if attempt == retries:
-                bak = path.with_suffix(path.suffix + ".bak")
-                try:
-                    if bak.exists():
-                        try:
-                            os.remove(bak)
-                        except Exception:
-                            pass
-                    os.replace(path, bak)
-                    return
-                except Exception:
-                    raise
+import tkinter as tk
+from tkinter import ttk, messagebox
+from pathlib import Path
+import os
 
 def log(msg):   print(msg, flush=True)
 def ok(msg):    print(f"[OK] {msg}", flush=True)
@@ -64,7 +20,7 @@ def ensure_windows():
         raise RuntimeError("This tool only supports Windows.")
 
 def get_paths_main():
-    """Main stencil path set (with ACL lock)."""
+    """Main stencil path set."""
     user_profile = os.environ.get('USERPROFILE')
     if not user_profile:
         raise RuntimeError("USERPROFILE is not set.")
@@ -75,110 +31,63 @@ def get_paths_main():
     return stencil_file_path, source_path, destination_path
 
 def get_user_data_stencil_path():
-    """Secondary stencil path (NO ACL changes). %APPDATA%\\Trane\\CSET\\UserData\\stenciltoload.cset"""
-    appdata = os.environ.get('APPDATA')  # == C:\Users\<user>\AppData\Roaming
+    """%APPDATA%\\Trane\\CSET\\UserData\\stenciltoload.cset"""
+    appdata = os.environ.get('APPDATA')  # C:\Users\<user>\AppData\Roaming
     if not appdata:
         raise RuntimeError("APPDATA is not set.")
     return Path(appdata) / "Trane" / "CSET" / "UserData" / "stenciltoload.cset"
 
-# ----------------- ACL logic (for the main path only) -----------------
-def deny_read_write_exec_modify_for_current_user(file_path: Path):
-    """
-    Prepend a DENY ACE for the current user covering:
-      FILE_GENERIC_READ | FILE_GENERIC_WRITE | FILE_GENERIC_EXECUTE | DELETE
-    This blocks Read, Write, Read & Execute, and Delete for the current user.
-    """
-    username = os.getlogin()
-    user_sid, _, _ = win32security.LookupAccountName(None, username)
-
-    sd = win32security.GetFileSecurity(str(file_path), win32security.DACL_SECURITY_INFORMATION)
-    old_dacl = sd.GetSecurityDescriptorDacl()
-
-    new_dacl = win32security.ACL()
-
-    # What to deny
-    deny_mask = (ntsc.FILE_GENERIC_READ |
-                 ntsc.FILE_GENERIC_WRITE |
-                 ntsc.FILE_GENERIC_EXECUTE |
-                 ntsc.DELETE)
-
-    # Put DENY first so it wins
+def open_stencils_folder(path: Path):
     try:
-        new_dacl.AddAccessDeniedAceEx(win32security.ACL_REVISION_DS, 0, deny_mask, user_sid)
-    except AttributeError:
-        new_dacl.AddAccessDeniedAce(win32security.ACL_REVISION, deny_mask, user_sid)
-
-    # Copy existing ACEs after our deny, handling both tuple formats
-    def _unpack_ace(ace):
-        # Returns (ace_type, ace_flags, access_mask, sid)
-        if len(ace) == 4:
-            return ace[0], ace[1], ace[2], ace[3]
-        elif len(ace) == 3 and isinstance(ace[2], tuple) and len(ace[2]) == 2:
-            return ace[0], ace[1], ace[2][0], ace[2][1]
+        if path.parent.exists():
+            os.startfile(str(path.parent))
         else:
-            return None  # Unknown/extended
+            fail(f"Folder does not exist: {path.parent}")
+    except Exception as ex:
+        fail(f"Could not open folder: {ex}")
 
-    if old_dacl:
-        for i in range(old_dacl.GetAceCount()):
-            ace = old_dacl.GetAce(i)
-            unpacked = _unpack_ace(ace)
-            if not unpacked:
-                continue
-            ace_type, ace_flags, ace_mask, ace_sid = unpacked
 
-            if ace_type == win32security.ACCESS_ALLOWED_ACE_TYPE:
-                try:
-                    new_dacl.AddAccessAllowedAceEx(win32security.ACL_REVISION_DS, ace_flags, ace_mask, ace_sid)
-                except AttributeError:
-                    new_dacl.AddAccessAllowedAce(win32security.ACL_REVISION, ace_mask, ace_sid)
-            elif ace_type == win32security.ACCESS_DENIED_ACE_TYPE:
-                try:
-                    new_dacl.AddAccessDeniedAceEx(win32security.ACL_REVISION_DS, ace_flags, ace_mask, ace_sid)
-                except AttributeError:
-                    new_dacl.AddAccessDeniedAce(win32security.ACL_REVISION, ace_mask, ace_sid)
+def print_manual_security_instructions(path: Path):
+    print(
+        "\n>>> Manual step (company policy):\n"
+        f"   File: {path}\n"
+        "   1) Right-click → Properties → Security.\n"
+        "   2) Edit… → Select your user.\n"
+        "   3) Deny: Full Control.\n"
+        "   4) Apply/OK.\n",
+        flush=True
+    )
 
-    # Keep inherited ACEs visible/effective
-    sd.SetSecurityDescriptorDacl(1, new_dacl, 1)
-    win32security.SetFileSecurity(str(file_path), win32security.DACL_SECURITY_INFORMATION, sd)
+def write_empty_list(path: Path):
+    """
+    Create or overwrite the file with '[]'.
+    No ACL/attribute changes. If we can't write, we log it and move on.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        path.write_text(json.dumps([]), encoding='utf-8')
+        ok(f"Wrote empty list to: {path}")
+    except Exception as ex:
+        fail(f"Could not write file '{path}': {ex}")
 
-# ----------------- Steps -----------------
 def replace_stencil_file_main():
-    """Main path: delete -> write [] -> apply DENY for current user."""
+    """Create/overwrite main stenciltoload.cset with [], then open folder for manual security."""
     ensure_windows()
     stencil_file_path, _, _ = get_paths_main()
-    stencil_file_path.parent.mkdir(parents=True, exist_ok=True)
-
-    if stencil_file_path.exists():
-        force_delete_file(stencil_file_path)
-        ok(f"Deleted existing file: {stencil_file_path}")
-
-    stencil_file_path.write_text(json.dumps([]), encoding='utf-8')
-    ok(f"Wrote empty list to: {stencil_file_path}")
-
-    # clear RO before DACL work (just in case)
-    try:
-        set_readonly(stencil_file_path, False)
-    except Exception:
-        pass
-
-    deny_read_write_exec_modify_for_current_user(stencil_file_path)
-    ok("Applied DENY (Read/Write/Execute/Delete) for current user (main path)")
+    write_empty_list(stencil_file_path)
+    open_stencils_folder(stencil_file_path)
 
 def replace_stencil_file_userdata():
-    """UserData path: delete -> write [] (NO ACL changes)."""
+    """Create/overwrite UserData stenciltoload.cset with []."""
     ensure_windows()
     stencil_file_path = get_user_data_stencil_path()
-    stencil_file_path.parent.mkdir(parents=True, exist_ok=True)
+    write_empty_list(stencil_file_path)
 
-    if stencil_file_path.exists():
-        force_delete_file(stencil_file_path)
-        ok(f"Deleted existing file (UserData): {stencil_file_path}")
-
-    stencil_file_path.write_text(json.dumps([]), encoding='utf-8')
-    ok(f"Wrote empty list to (UserData): {stencil_file_path}")
 
 def copy_folders():
-    """Copy everything from source to destination, excluding stenciltoload.cset."""
+    """Copy everything from source to destination (directories only).
+    Skip any folders that already exist in the destination.
+    """
     ensure_windows()
     _, source_path, destination_path = get_paths_main()
 
@@ -192,10 +101,13 @@ def copy_folders():
         src = item
         dst = destination_path / item.name
         if src.is_dir():
-            shutil.copytree(src, dst, dirs_exist_ok=True)
-            copied += 1
+            # Only copy if destination folder doesn't already exist
+            if not dst.exists():
+                shutil.copytree(src, dst)
+                copied += 1
 
-    ok(f"Copied {copied} items to '{destination_path}' (skipped stenciltoload.cset).")
+    ok(f"Copied {copied} new folders to '{destination_path}'.")
+
 
 def add_to_trusted_sites():
     """Add umw-stencil-loader.s3.amazonaws.com to Trusted Sites (HKCU)."""
@@ -223,16 +135,200 @@ def open_installation_url():
     except Exception as ex:
         fail(f"Error opening URL: {ex}")
 
-# ----------------- Main -----------------
+
+def create_umwstencilloader_config():
+    """Create %APPDATA%\\UMWStencilLoader and write settings.json."""
+    ensure_windows()
+    appdata = os.environ.get('APPDATA')  # e.g., C:\Users\<user>\AppData\Roaming
+    if not appdata:
+        raise RuntimeError("APPDATA is not set.")
+
+    cfg_dir = Path(appdata) / "UMWStencilLoader"
+    cfg_dir.mkdir(parents=True, exist_ok=True)
+    cfg_path = cfg_dir / "settings.json"
+
+    payload = {
+        "StencilFoldersPath": [
+            r"%appdata%\Roaming\Trane\Stencils copy"
+        ],
+        "StencilExcludePaths": [],
+        "DictShapes": "Error: \n\nVisio cannot open the file because it's not a Visio file or it has become corrupted."
+    }
+
+    try:
+        cfg_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        ok(f"Wrote settings.json at: {cfg_path}")
+    except Exception as ex:
+        fail(f"Could not write settings.json '{cfg_path}': {ex}")
+
+
+
+def show_manual_security_gui(target_file: Path):
+    """
+    Simple Tkinter wizard that shows step-by-step instructions with screenshots.
+    PNGs are loaded from ./assets/manual_security/*.png if present.
+    """
+    ensure_windows()
+
+    # Define your steps (title, description, image filename)
+    assets_dir = Path(__file__).parent / "assets" / "manual_security"
+    steps = [
+        (
+            "Right-click the file",
+            f"Navigate to the folder and right-click the file:\n{target_file.name}\nChoose 'Properties'.",
+            "step1_right_click_properties.png",
+        ),
+        (
+            "Open the Security tab",
+            "In the Properties window, click the 'Security' tab.",
+            "step2_security_tab.png",
+        ),
+        (
+            "Edit permissions",
+            "Click 'Edit…', then select your Windows user in the list.",
+            "step3_edit_select_user.png",
+        ),
+        (
+            "Deny Full Control - Click Apply/OK",
+            "Under 'Permissions for <your user>', check 'Deny' for 'Full control'.\nClick Apply and then OK.",
+            "step4_deny_full_control.png",
+        ),
+    ]
+
+    root = tk.Tk()
+    root.title("Manual Security Instructions")
+    root.geometry("720x920")   # wider so bold text wraps nicer
+    root.minsize(720, 980)
+
+    # --- TOP: Bold title
+    title_var = tk.StringVar(value="")
+    lbl_title = ttk.Label(root, textvariable=title_var, font=("Segoe UI", 14, "bold"))
+    lbl_title.pack(padx=12, pady=(12, 6), anchor="w")
+
+    # --- TOP (still): Bold description (moved above image and set to bold)
+    desc_var = tk.StringVar(value="")
+    lbl_desc = ttk.Label(root, textvariable=desc_var, font=("Segoe UI", 11, "bold"), wraplength=760, justify="left")
+    lbl_desc.pack(padx=12, pady=(0, 8), anchor="w")
+
+    # --- MIDDLE: image area
+    canvas = tk.Canvas(root, highlightthickness=0)
+    canvas.pack(fill="both", expand=True, padx=12, pady=6)
+
+    # --- BOTTOM controls
+    bottom = ttk.Frame(root)
+    bottom.pack(fill="x", padx=12, pady=12)
+
+    btn_back = ttk.Button(bottom, text="◀ Back")
+    btn_next = ttk.Button(bottom, text="Next ▶")
+    btn_open = ttk.Button(bottom, text="Open Folder")
+    btn_close = ttk.Button(bottom, text="Close")
+
+    btn_back.grid(row=0, column=0, padx=(0, 6))
+    btn_next.grid(row=0, column=1, padx=(0, 6))
+    bottom.grid_columnconfigure(2, weight=1)
+    btn_open.grid(row=0, column=3, padx=6)
+    btn_close.grid(row=0, column=5, padx=(6, 0))
+
+    state = {"index": 0, "photo": None, "img_native": None}
+
+    def open_folder():
+        try:
+            if target_file.parent.exists():
+                os.startfile(str(target_file.parent))
+            else:
+                messagebox.showerror("Error", f"Folder does not exist:\n{target_file.parent}")
+        except Exception as e:
+            messagebox.showerror("Error", f"Could not open folder:\n{e}")
+
+    def load_image_fit_canvas(image_path: Path):
+        try:
+            img = tk.PhotoImage(file=str(image_path))
+        except Exception:
+            return None
+
+        c_w = max(canvas.winfo_width(), 1)
+        c_h = max(canvas.winfo_height(), 1)
+        img_w = img.width()
+        img_h = img.height()
+
+        scale_w = max(img_w // c_w, 1)
+        scale_h = max(img_h // c_h, 1)
+        subsample = max(scale_w, scale_h, 1)
+        if subsample > 1:
+            img = img.subsample(subsample, subsample)
+        return img
+
+    def render():
+        i = state["index"]
+        title, desc, img_file = steps[i]
+        title_var.set(f"Step {i+1} of {len(steps)} — {title}")
+        desc_var.set(desc)
+
+        canvas.delete("all")
+        img_path = assets_dir / img_file
+        photo = load_image_fit_canvas(img_path)
+        state["photo"] = photo
+
+        if photo is None:
+            canvas.create_text(
+                canvas.winfo_width() // 2,
+                canvas.winfo_height() // 2,
+                text=f"(Missing image)\n{img_path}",
+                font=("Segoe UI", 10),
+                justify="center"
+            )
+        else:
+            x = canvas.winfo_width() // 2
+            y = canvas.winfo_height() // 2
+            canvas.create_image(x, y, image=photo)
+
+        btn_back.config(state=("disabled" if i == 0 else "normal"))
+        btn_next.config(text=("Finish" if i == len(steps) - 1 else "Next ▶"))
+
+    def on_back():
+        if state["index"] > 0:
+            state["index"] -= 1
+            render()
+
+    def on_next():
+        if state["index"] < len(steps) - 1:
+            state["index"] += 1
+            render()
+        else:
+            root.destroy()
+
+    def on_resize(_event):
+        render()
+
+    btn_back.config(command=on_back)
+    btn_next.config(command=on_next)
+    btn_open.config(command=open_folder)
+    btn_close.config(command=root.destroy)
+
+    root.bind("<Configure>", on_resize)
+    root.bind("<Left>", lambda e: on_back())
+    root.bind("<Right>", lambda e: on_next())
+    root.bind("<Escape>", lambda e: root.destroy())
+
+    root.after(50, render)
+    root.mainloop()
+
+
 def main():
     print("=== UMW Stencil Tool (Console) ===", flush=True)
+
+    # define this ONCE up front so you can use it later
+    stencil_file_path, _, _ = get_paths_main()
+
     steps = [
-        ("Replace stencils to load file (Stencils)", replace_stencil_file_main),
-        ("Replace stencils to load file (UserData, no ACL)", replace_stencil_file_userdata),
+        ("Create/overwrite stenciltoload.cset (Stencils) and open folder", replace_stencil_file_main),
+        ("Create/overwrite stenciltoload.cset (UserData)", replace_stencil_file_userdata),
         ("Copy Stencils folders", copy_folders),
+        ("Create UMWStencilLoader config JSON", create_umwstencilloader_config),  
         ("Add installer to Trusted Sites", add_to_trusted_sites),
         ("Open installer URL", open_installation_url),
     ]
+
 
     results = []
     for name, fn in steps:
@@ -255,9 +351,20 @@ def main():
     success = all(okflag for _, okflag, _ in results)
     print("\nAll steps completed." if success else "\nOne or more steps failed. See messages above.", flush=True)
 
-    # Pause so the window stays open when double-clicked
-    input("\nPress Enter to close this window...")
+    # text instructions
+    print_manual_security_instructions(stencil_file_path)
+
+    # GUI instructions (BEFORE input/sys.exit)
+    try:
+        show_manual_security_gui(stencil_file_path)
+    except Exception as ex:
+        fail(f"Could not display GUI instructions: {ex}")
+
+    # keep the console open after GUI closes
     sys.exit(0 if success else 1)
+
 
 if __name__ == "__main__":
     main()
+
+
