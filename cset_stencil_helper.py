@@ -149,7 +149,7 @@ def create_umwstencilloader_config():
 
     payload = {
         "StencilFoldersPath": [
-            r"%appdata%\Roaming\Trane\Stencils copy"
+            r"%appdata%\Trane\Stencils copy"
         ],
         "StencilExcludePaths": [],
         "DictShapes": "Error: \n\nVisio cannot open the file because it's not a Visio file or it has become corrupted."
