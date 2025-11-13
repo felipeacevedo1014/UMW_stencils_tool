@@ -175,7 +175,7 @@ def show_manual_security_gui(target_file: Path):
     steps = [
         (
             "Right-click the file",
-            f"Navigate to the folder and right-click the file:\n{target_file.name}\nChoose 'Properties'.",
+            f"Navigate to the CSET folder and right-click the file:\n{target_file.name}\nChoose 'Properties'.",
             "step1_right_click_properties.png",
         ),
         (
@@ -190,15 +190,20 @@ def show_manual_security_gui(target_file: Path):
         ),
         (
             "Deny Full Control - Click Apply/OK",
-            "Under 'Permissions for <your user>', check 'Deny' for 'Full control'.\nClick Apply and then OK.",
+            "Under 'Permissions for <your user>', check 'Deny' for 'Modify, Read and execute, Read and Write'.\nClick Apply and then OK.",
             "step4_deny_full_control.png",
+        ),
+        (
+            "If there is a pop-up about Windows Security, click Yes",
+            "",
+            "step5_windows_security.png",
         ),
     ]
 
     root = tk.Tk()
     root.title("Manual Security Instructions")
-    root.geometry("720x920")   # wider so bold text wraps nicer
-    root.minsize(720, 980)
+    root.geometry("1080x900")   # wider so bold text wraps nicer
+    root.minsize(600, 300)
 
     # --- TOP: Bold title
     title_var = tk.StringVar(value="")
